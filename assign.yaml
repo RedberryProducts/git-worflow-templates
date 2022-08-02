@@ -1,0 +1,18 @@
+name: PR assignment
+
+on:
+    pull_request:
+        types: [opened, edited, synchronize, reopened]
+# steps
+# Add tornike's user as an admin in repo
+
+jobs:
+    auto-assign:
+        runs-on: ubuntu-latest
+        steps:
+            - name: 'Auto-assign PR'
+              uses: pozil/auto-assign-issue@v1
+              with:
+                  repo-token: ${{ secrets.GTHB_API_CREDS }}
+                  teams: react-reviewers
+                  numOfAssignee: 1

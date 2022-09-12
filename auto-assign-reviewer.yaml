@@ -14,5 +14,5 @@ jobs:
               uses: pozil/auto-assign-issue@v1
               with:
                   repo-token: ${{ secrets.GTHB_PAT }}
-                  teams: react-reviewers
+                  teams: ${{ secrets.REVIEWER_TEAM_NAME }}
                   numOfAssignee: 1

@@ -1,0 +1,62 @@
+name: Deploy Laravel to Dev
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+env:
+  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_BOT_WEBHOOK_URL }}
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create SSH key file
+        run: echo "${{ secrets.SSH_KEY }}" > id_rsa && chmod 600 id_rsa
+
+      - name: Prepare deploy-script
+        run: |
+          cat > deploy-script.sh <<EOF
+          
+          cd ${{ secrets.PROJECT_FOLDER }}
+          
+          php artisan down
+          
+          git reset --hard
+          git clean -df
+          git pull origin main
+          
+          composer install --no-interaction --prefer-dist --optimize-autoloader
+          
+          php artisan optimize:clear
+          php artisan migrate --force
+          php artisan optimize
+          php artisan route:clear
+          
+          npm install && npm run dev
+          
+          php artisan up
+          
+          EOF
+          
+      - name: Run deploy-script on server
+        run: >
+          ssh "${{ secrets.USERNAME }}"@"${{ secrets.HOST }}"
+          -o StrictHostKeyChecking=accept-new
+          -i id_rsa
+          "bash -s"
+          < deploy-script.sh
+
+      - name: Deployment Notification
+        if: always()
+        uses: adamkdean/simple-slack-notify@master
+        with:
+          channel: "#deployments"
+          status: ${{ job.status }}
+          success_text: "Deployment (#${env.GITHUB_RUN_NUMBER}) completed successfully"
+          failure_text: "Deployment (#${env.GITHUB_RUN_NUMBER}) failed"
+          cancelled_text: "Deployment (#${env.GITHUB_RUN_NUMBER}) was cancelled"
+          fields: |
+            [{ "title": "Host", "value": "${{ secrets.DEV_DEPLOY_HOST }}"},
+            { "title": "Action URL", "value": "${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}"}]

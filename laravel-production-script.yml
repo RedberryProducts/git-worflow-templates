@@ -1,0 +1,119 @@
+name: Deploy New Version (PROD)
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set env
+        run: echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
+
+      - name: Test
+        run: |
+          echo $RELEASE_VERSION
+          echo ${{ env.RELEASE_VERSION }}
+      - name: Create SSH key file
+        run: echo "${{ secrets.SSH_KEY }}" > id_rsa && chmod 600 id_rsa
+
+      - name: Prepare deploy-script
+        run: |
+          cat > deploy-script.sh <<EOF
+          cd ${{ secrets.PROJECT_FOLDER }}
+          php artisan down
+          git reset --hard
+          git clean -df
+          git fetch --all --tags
+          git checkout tags/${{ env.RELEASE_VERSION }} -b ${{ env.RELEASE_VERSION }}-branch
+          composer install --no-interaction --prefer-dist --optimize-autoloader
+          php artisan optimize:clear
+          php artisan migrate --force
+          php artisan optimize
+          php artisan route:clear
+          
+          php artisan horizon:terminate
+          npm install && npm run dev
+          php artisan up
+          EOF
+          
+      - name: Run deploy-script on server
+        run: >
+          ssh "${{ secrets.USERNAME }}"@"${{ secrets.HOST }}"
+          -o StrictHostKeyChecking=accept-new
+          -i id_rsa
+          "bash -s"
+          < deploy-script.sh
+          
+      - name: Dump Github context
+        env:
+          GITHUB_CONTEXT: ${{ toJSON(github) }}
+        run: echo "$GITHUB_CONTEXT"
+            
+      - name: Slack Notification on SUCCESS
+        if: success()
+        uses: tokorom/action-slack-incoming-webhook@main
+        with:
+          text: A release is published.
+          blocks: |
+            [
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "New version is available!"
+                }
+              },
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "Version: ${{ github.event.release.tag_name}}"
+                }
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*Author:*\n${{ github.actor }}"
+                }
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "*Information:*"
+                }
+              }
+            ]
+      - name: Send the release body
+        if: success()
+        uses: tokorom/action-slack-incoming-webhook@main
+        with:
+          text: |
+            ${{ steps.split_body.outputs.text_chunks | join('\n\n') }}
+          blocks: []
+        id: send_body
+      - name: Split the release body
+        if: success()
+        run: |
+          # Define the character limit for each message
+          limit = 4000
+
+          # Get the release body
+          body = "${{ github.event.release.body }}"
+
+          # Split the release body into chunks of text with a maximum length of "limit"
+          chunks = []
+          while len(body) > limit:
+              index = body.rfind("\n\n", 0, limit)
+              chunks.append(body[:index])
+              body = body[index:]
+          chunks.append(body)
+
+          # Set the output value
+          echo ::set-output name=text_chunks::${{ toJSON(chunks) }}

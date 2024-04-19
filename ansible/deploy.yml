@@ -1,0 +1,77 @@
+- hosts: "{{ app_host }}"
+  remote_user: "{{ app_user }}"
+
+  tasks:
+    - name: Check if composer vendor exists
+      stat:
+        path: "{{ app_directory }}/vendor"
+      register: app_vendor
+
+    - name: Turn on maintenance mode
+      command:
+        chdir: "{{ app_directory }}"
+        cmd: php artisan down
+      register: artisan_down
+      changed_when: "'Application is now in maintenance mode' in artisan_down.stdout"
+      when: app_vendor.stat.exists
+
+    - name: Get app from GitHub
+      git:
+        repo: git@github.com:RedberryProducts/{{ app_repo_name }}.git
+        version: "{{ app_ref }}"
+        dest: "{{ app_directory }}"
+        depth: 1
+        accept_newhostkey: yes
+        force: yes
+      register: repo
+
+    - name: Install packages based on package.json
+      community.general.npm:
+        path: "{{ app_directory }}"
+
+    - name: Build node assets
+      environment:
+        NODE_OPTIONS: "--max_old_space_size=1000"
+      command:
+        chdir: "{{ app_directory }}"
+        cmd: npm run dev
+
+    - name: Composer install
+      community.general.composer:
+        command: install
+        prefer_dist: yes
+        optimize_autoloader: yes
+        working_dir: "{{ app_directory }}"
+
+    - name: Clear caches
+      command:
+        chdir: "{{ app_directory }}"
+        cmd: php artisan optimize:clear
+      when: app_vendor.stat.exists
+
+    - name: Migrate database
+      command:
+        chdir: "{{ app_directory }}"
+        cmd: php artisan migrate --force
+      run_once: yes
+      register: artisan_migrate
+      changed_when: "'Nothing to migrate' not in artisan_migrate.stdout"
+
+    - name: Optimize cache
+      command:
+        chdir: "{{ app_directory }}"
+        cmd: php artisan optimize
+
+    - name: Link laravel storage
+      command:
+        chdir: "{{ app_directory }}"
+        cmd: php artisan storage:link
+        creates: "{{ app_directory }}/public/storage"
+      when: not app_vendor.stat.exists
+
+    - name: Turn off maintenance mode
+      command:
+        chdir: "{{ app_directory }}"
+        cmd: php artisan up
+      register: artisan_up
+      changed_when: "'Application is now live' in artisan_up.stdout"

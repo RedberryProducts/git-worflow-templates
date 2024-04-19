@@ -1,0 +1,65 @@
+name: Deploy Laravel
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - release-v*
+    tags:
+      - v[0-9]+.[0-9]+.[0-9]+
+
+env:
+  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_BOT_WEBHOOK_URL }}
+
+jobs:
+  github-env:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set GitHub environment as output
+        id: gh_env
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]
+          then
+            echo "::set-output name=gh_env::prod"
+          elif [[ "$GITHUB_REF_NAME" =~ ^release-v[0-9]+\.[0-9]+\.[0-9]+ ]]
+            echo "::set-output name=gh_env::staging"
+          else
+            echo "::set-output name=gh_env::dev"
+          fi
+    outputs:
+      GH_ENVIRONMENT: ${{ steps.gh_env.outputs.gh_env }}
+
+  deploy:
+    needs:
+      - github-env
+    environment: ${{ needs.github-env.outputs.GH_ENVIRONMENT }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create SSH key file
+        run: echo "${{ secrets.SSH_KEY }}" > id_rsa && chmod 600 id_rsa
+
+      - name: Run ansible playbook
+        run: >
+          ansible-playbook -i ${{ secrets.HOST }}, playbook.yml
+            -e '{
+                  "app_host": "${{ secrets.HOST }}",
+                  "app_user": "${{ secrets.USERNAME }}",
+                  "app_directory": "${{ secrets.PROJECT_FOLDER }}",
+                  "app_repo_name": "${{ env.GITHUB_ACTION_REPOSITORY }}",
+                  "app_ref": "$GITHUB_REF_NAME"
+                }'
+
+      - name: Deployment Notification
+        if: always()
+        uses: adamkdean/simple-slack-notify@master
+        with:
+          channel: "#deployments"
+          status: ${{ job.status }}
+          success_text: "Deployment (#${env.GITHUB_RUN_NUMBER}) completed successfully"
+          failure_text: "Deployment (#${env.GITHUB_RUN_NUMBER}) failed"
+          cancelled_text: "Deployment (#${env.GITHUB_RUN_NUMBER}) was cancelled"
+          fields: |
+            [{ "title": "Host", "value": "${{ secrets.HOST }}"},
+            { "title": "Action URL", "value": "${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}"}]
